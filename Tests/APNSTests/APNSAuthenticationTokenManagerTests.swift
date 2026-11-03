@@ -14,6 +14,7 @@
 
 @testable import APNSCore
 import Crypto
+import Foundation
 import XCTest
 import NIOConcurrencyHelpers
 
@@ -141,6 +142,25 @@ final class APNSAuthenticationTokenManagerTests: XCTestCase {
         let payload = try decodeSegment(segments[1])
         XCTAssertTrue(payload.contains("\"iss\": \"foo\""))
         XCTAssertTrue(payload.contains("\"kid\": \"bar\""))
+    }
+
+    /// Exercise the actual Crypto product and token manager after the upstream range backport.
+    /// The signature must bind the original encoded header and payload, and reject a changed payload.
+    func testTokenSignatureVerifiesAndRejectsChangedPayload() async throws {
+        let token = try await tokenManager.nextValidToken
+        let jwt = try XCTUnwrap(token.split(separator: " ").last)
+        let segments = jwt.split(separator: ".")
+        XCTAssertEqual(segments.count, 3)
+        guard segments.count == 3 else { return }
+        let signatureBytes = try Base64.decode(
+            string: String(segments[2]), options: [.base64UrlAlphabet, .omitPaddingCharacter])
+        let signature = try P256.Signing.ECDSASignature(rawRepresentation: Data(signatureBytes))
+        let key = try P256.Signing.PrivateKey(pemRepresentation: Self.signingKey)
+        let signedBytes = Data("\(segments[0]).\(segments[1])".utf8)
+        XCTAssertTrue(key.publicKey.isValidSignature(signature, for: signedBytes))
+        var changedBytes = signedBytes
+        changedBytes.append(0x21)
+        XCTAssertFalse(key.publicKey.isValidSignature(signature, for: changedBytes))
     }
 
     private func decodeSegment(_ segment: Substring) throws -> String {
